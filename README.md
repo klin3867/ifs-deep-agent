@@ -151,6 +151,7 @@ For the main reasoning model, we recommend using the following models. Performan
 | Qwen3-8B | 8B | Hybrid | [🤗 HuggingFace](https://huggingface.co/Qwen/Qwen3-8B) |
 | Qwen3-30B-A3B-Thinking | 30B | Thinking | [🤗 HuggingFace](https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507) |
 | QwQ-32B | 32B | Thinking | [🤗 HuggingFace](https://huggingface.co/Qwen/QwQ-32B) |
+| DeepAgent-QwQ-32B | 32B | Thinking | [🤗 HuggingFace](https://huggingface.co/lixiaoxi45/DeepAgent-QwQ-32B) |
 | Qwen3-235B-A22B-Thinking | 235B | Thinking | [🤗 HuggingFace](https://huggingface.co/Qwen/Qwen3-235B-A22B-Thinking-2507) |
 
 For the auxiliary model, we recommend using the [Qwen2.5-Instruct](https://huggingface.co/collections/Qwen/qwen25) or [Qwen3-Instruct](https://huggingface.co/collections/Qwen/qwen3) series models with similar parameters to the main reasoning model, but without thinking capabilities for faster inference.
