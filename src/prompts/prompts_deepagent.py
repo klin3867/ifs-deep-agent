@@ -544,6 +544,144 @@ Reasoning: high
 """
 
 
+# ---------------------- Memory System Prompts ----------------------
+
+def get_memory_retrieval_instruction(past_experiences: str, tool_memories: str) -> str:
+    """Generate instruction for utilizing past memories in current task."""
+    instruction = """# Prior Experience
+
+You have access to memories from previous similar tasks. Use these experiences to:
+1. Avoid repeating past mistakes
+2. Apply successful strategies from similar tasks
+3. Use tool parameters that have worked well before
+
+"""
+    if past_experiences:
+        instruction += f"""## Relevant Past Experiences
+{past_experiences}
+
+"""
+    if tool_memories:
+        instruction += f"""## Tool Usage Patterns
+{tool_memories}
+
+"""
+    instruction += """Remember: These memories are meant to guide your approach, not constrain it. Adapt strategies based on the current task's specific requirements.
+"""
+    return instruction
+
+
+def get_enhanced_episode_memory_instruction(question: str, prev_reasoning: str, available_tools: str = "") -> str:
+    """Enhanced episode memory generation with cross-task learning focus."""
+    instruction = f"""You are a memory compression assistant specializing in cross-task learning. Your task is to summarize the key events and decisions from this reasoning session into structured episode memory that can help with future similar tasks.
+
+Task:
+{question}
+
+Available tools:
+{available_tools}
+
+Full reasoning history:
+{prev_reasoning}
+
+Instructions:
+1. Identify major milestones, subgoal completions, and strategic decisions
+2. Extract lessons that would be valuable for similar future tasks
+3. Note any surprising discoveries or unexpected challenges
+4. Highlight what worked well and what didn't
+
+Output in this JSON format:
+```json
+{{
+  "task_description": "A concise summary of the task and its domain/type for future matching.",
+  "task_category": "The category of task (e.g., 'data retrieval', 'calculation', 'search', 'navigation', etc.)",
+  "key_events": [
+    {{
+      "step": "step number",
+      "description": "A detailed description of the action or decision at this step.",
+      "outcome": "The result and any lessons learned.",
+      "transferable_insight": "What insight from this step could apply to future similar tasks?"
+    }},
+    ...
+  ],
+  "successful_strategies": ["List of approaches that worked well"],
+  "pitfalls_to_avoid": ["List of mistakes or dead-ends encountered"],
+  "current_progress": "Summary of task progress and remaining work."
+}}
+```
+
+Now generate the episode memory for the task: {question}
+Directly output the JSON format episode memory. Do not include any other text.
+"""
+    if available_tools == "":
+        instruction = instruction.replace("\nAvailable tools:\n", "")
+    return instruction
+
+
+def get_enhanced_tool_memory_instruction(question: str, prev_reasoning: str, tool_call_history: str, available_tools: str = "") -> str:
+    """Enhanced tool memory generation with focus on cross-task tool learning."""
+    instruction = f"""You are a tool experience analyst. Your task is to extract and consolidate tool usage patterns that can improve future tool utilization across similar tasks.
+
+Task:
+{question}
+
+Available tools:
+{available_tools}
+
+Full reasoning history:
+{prev_reasoning}
+
+Tool Call History (in chronological order):
+{tool_call_history}
+
+Instructions:
+1. Analyze each tool call for success/failure patterns
+2. Identify effective parameter combinations
+3. Note common error patterns and their solutions
+4. Extract generalizable rules for tool usage
+5. Focus on insights that transfer to other tasks
+
+Output in this JSON format:
+```json
+{{
+  "tools_used": [
+    {{
+      "tool_name": "string",
+      "call_count": "number of times called",
+      "success_rate": "float between 0 and 1",
+      "effective_parameters": ["parameters that led to good results"],
+      "ineffective_parameters": ["parameters that caused issues"],
+      "common_errors": ["error types encountered"],
+      "error_solutions": ["how errors were resolved"],
+      "response_pattern": "description of typical successful output",
+      "best_use_cases": ["scenarios where this tool excels"],
+      "experience": "Overall lessons learned about this tool"
+    }},
+    ...
+  ],
+  "tool_combinations": [
+    {{
+      "tools": ["tool1", "tool2"],
+      "pattern": "How these tools work well together"
+    }}
+  ],
+  "derived_rules": [
+    "When X condition occurs, prefer tool Y",
+    "Tool Z works best with parameter A set to B",
+    "Avoid using tool W when the query contains X",
+    ...
+  ]
+}}
+```
+
+Now generate the tool memory for the task: {question}
+Directly output the JSON format tool memory. Do not include any other text.
+"""
+    if available_tools == "":
+        instruction = instruction.replace("\nAvailable tools:\n", "")
+    return instruction
+
+
 def get_rapidapi_simulation_prompt(api_name, tool_name, category_name, openai_function_def, arguments_json):
     """Construct a prompt for the aux LLM to simulate a RapidAPI call.
 

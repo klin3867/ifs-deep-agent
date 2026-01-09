@@ -66,6 +66,19 @@ from utils.utils import (
 from tools.tool_manager import ToolManager
 
 
+def is_openai_model(model_name: str, base_url: str) -> bool:
+    """Check if we're using OpenAI API (not vLLM)."""
+    openai_indicators = ['openai.com', 'gpt-3', 'gpt-4', 'gpt-5', 'o1', 'o3']
+    return any(ind in base_url.lower() or ind in model_name.lower() for ind in openai_indicators)
+
+
+class OpenAITokenizerStub:
+    """Stub tokenizer for OpenAI models - just returns the prompt as-is."""
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        # OpenAI handles chat formatting internally, just return the user content
+        return messages[0]['content'] if messages else ''
+
+
 def extract_json_from_response(response: str) -> str:
     """Extract JSON content from response using regex pattern matching."""
     try:
@@ -126,11 +139,33 @@ async def generate_response(
     stop: List[str] = [],
     timeout: int = 3600,
     retry_limit: int = 3,
+    use_openai_chat: bool = False,
 ) -> Tuple[str, str]:
     """Generate a single response with retry logic"""
     for attempt in range(retry_limit):
         try:
             async with semaphore:
+                # OpenAI models use chat completions API directly
+                if use_openai_chat:
+                    messages = [{"role": "user", "content": prompt}]
+                    # Build params - reasoning models (o1/o3/gpt-5) have restrictions
+                    is_reasoning_model = any(x in model_name.lower() for x in ['o1', 'o3', 'gpt-5'])
+                    chat_params = {
+                        "model": model_name,
+                        "messages": messages,
+                        "max_completion_tokens": min(max_tokens, 16384),
+                        "timeout": timeout,
+                    }
+                    # Only add these params for non-reasoning models
+                    if not is_reasoning_model:
+                        chat_params["temperature"] = temperature
+                        chat_params["top_p"] = top_p
+                        if stop:
+                            chat_params["stop"] = stop
+                    response = await client.chat.completions.create(**chat_params)
+                    return prompt, response.choices[0].message.content or ''
+                
+                # vLLM / local models use completions API with chat template
                 if generate_mode == "chat":
                     messages = [{"role": "user", "content": prompt}]
                     formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -201,6 +236,7 @@ async def run_tool_selection(
         max_tokens=args.max_tokens,
         repetition_penalty=args.repetition_penalty,
         top_k=args.top_k_sampling,
+        use_openai_chat=args.use_openai_chat_aux,
     )
 
     # Extract only the openai_function part for the prompt
@@ -223,6 +259,7 @@ async def run_tool_selection(
         repetition_penalty=args.repetition_penalty,
         top_k=args.top_k_sampling,
         model_name=args.aux_model_name,
+        use_openai_chat=args.use_openai_chat_aux,
     )
 
     match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
@@ -264,6 +301,7 @@ async def run_tool_response_analysis(
         max_tokens=args.max_tokens,
         repetition_penalty=args.repetition_penalty,
         top_k=args.top_k_sampling,
+        use_openai_chat=args.use_openai_chat_aux,
     )
 
     prompt = tool_response_analysis_prompt(
@@ -284,6 +322,7 @@ async def run_tool_response_analysis(
         repetition_penalty=args.repetition_penalty,
         top_k=args.top_k_sampling,
         model_name=args.aux_model_name,
+        use_openai_chat=args.use_openai_chat_aux,
     )
     
     return response
@@ -337,6 +376,7 @@ async def run_thought_folding(
             max_tokens=args.max_tokens,
             repetition_penalty=args.repetition_penalty,
             top_k=args.top_k_sampling,
+            use_openai_chat=args.use_openai_chat_aux,
         )
         return extract_json_from_response(episode_memory_response)
 
@@ -354,6 +394,7 @@ async def run_thought_folding(
             max_tokens=args.max_tokens,
             repetition_penalty=args.repetition_penalty,
             top_k=args.top_k_sampling,
+            use_openai_chat=args.use_openai_chat_aux,
         )
         return extract_json_from_response(working_memory_response)
 
@@ -371,6 +412,7 @@ async def run_thought_folding(
             max_tokens=args.max_tokens,
             repetition_penalty=args.repetition_penalty,
             top_k=args.top_k_sampling,
+            use_openai_chat=args.use_openai_chat_aux,
         )
         return extract_json_from_response(tool_memory_response)
 
@@ -417,6 +459,7 @@ async def generate_main_reasoning_sequence(
         repetition_penalty=args.repetition_penalty,
         top_k=args.top_k_sampling,
         stop=[END_TOOL_SEARCH, END_TOOL_CALL, FOLD_THOUGHT],
+        use_openai_chat=args.use_openai_chat,
     )
     
     # Update token count and sequence fields
@@ -577,6 +620,27 @@ async def generate_main_reasoning_sequence(
                         interactions=seq['interactions'],
                         available_tools=seq['available_tools'],
                     )
+
+                    # ---------------------- Persist Memories ----------------------
+                    # Store memories to persistent storage for cross-task learning
+                    if getattr(args, 'memory_enabled', True) and tool_manager.memory_manager is not None:
+                        try:
+                            # Parse JSON memories if they are strings
+                            ep_mem = json.loads(episode_memory) if isinstance(episode_memory, str) else episode_memory
+                            wk_mem = json.loads(working_memory) if isinstance(working_memory, str) else working_memory
+                            tl_mem = json.loads(tool_memory) if isinstance(tool_memory, str) else tool_memory
+
+                            tool_manager.store_memory_on_fold(
+                                episode_memory=ep_mem,
+                                working_memory=wk_mem,
+                                tool_memory=tl_mem,
+                                task_description=seq['item']['Question'],
+                                task_id=str(seq['id']),
+                                dataset_name=args.dataset_name,
+                            )
+                        except Exception as e:
+                            print(f"Warning: Failed to persist memories: {e}")
+
                     append_text = f"Memory of previous folded thoughts:\n\nEpisode Memory:\n{episode_memory}\n\nWorking Memory:\n{working_memory}\n\nTool Memory:\n{tool_memory}"
                     seq['prompt'] = seq['original_prompt'].replace("Now, begin your reasoning for", f"{append_text}\n\nNow, begin your reasoning for")
                     seq['interactions'].append({
@@ -602,7 +666,8 @@ async def generate_main_reasoning_sequence(
                 repetition_penalty=args.repetition_penalty,
                 top_k=args.top_k_sampling,
                 stop=[END_TOOL_SEARCH, END_TOOL_CALL, FOLD_THOUGHT],
-                generate_mode="completion"
+                generate_mode="completion",
+                use_openai_chat=args.use_openai_chat,
             )
             
             # Update token count and sequence fields
@@ -637,6 +702,7 @@ async def generate_main_reasoning_sequence(
                 repetition_penalty=args.repetition_penalty+0.1,
                 top_k=args.top_k_sampling,
                 generate_mode="completion",
+                use_openai_chat=args.use_openai_chat,
             )
             
             seq['output'] += final_response
@@ -655,8 +721,21 @@ async def main_async():
         setattr(args, k, v)
 
     # ---------------------- Initialize tokenizers ----------------------
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-    aux_tokenizer = AutoTokenizer.from_pretrained(args.aux_tokenizer_path)
+    # Check if using OpenAI API (no local tokenizer needed)
+    args.use_openai_chat = is_openai_model(args.model_name, args.base_url)
+    args.use_openai_chat_aux = is_openai_model(args.aux_model_name, args.aux_base_url)
+    
+    if args.use_openai_chat:
+        print(f"Detected OpenAI model: {args.model_name} - using chat completions API")
+        tokenizer = OpenAITokenizerStub()
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    
+    if args.use_openai_chat_aux:
+        print(f"Detected OpenAI aux model: {args.aux_model_name} - using chat completions API")
+        aux_tokenizer = OpenAITokenizerStub()
+    else:
+        aux_tokenizer = AutoTokenizer.from_pretrained(args.aux_tokenizer_path)
 
     # ---------------------- Set random seed ----------------------
     if args.seed is None:
@@ -718,7 +797,9 @@ async def main_async():
     # ---------------------- Load and prepare data ----------------------
     if args.single_question:
         data_list = [{'Question': args.single_question}]
-        args.dataset_name = 'custom'
+        # Preserve dataset_name if it's 'mcp' (for MCP tool integration)
+        if args.dataset_name != 'mcp':
+            args.dataset_name = 'custom'
     else:
         print('-----------------------')
         print(f'Using {args.dataset_name} dataset.')
@@ -884,6 +965,13 @@ async def main_async():
             from tools.python_executor import get_openai_function_execute_python_code
             tool_list = [get_openai_function_execute_python_code(file_process=False)]
 
+        elif args.dataset_name == 'mcp':
+            # MCP (IFS Cloud) dataset - use compact tool registry for token efficiency
+            from tools.mcp_tool_registry import build_tool_prompt
+            question = item.get('Question', item.get('question', item.get('query', '')))
+            # tool_list will be the compact string from registry, not JSON
+            tool_list = build_tool_prompt()  # Returns ~1,200 tokens instead of ~30,000
+
         else: # Generic case
             if 'Question' in item: question = item['Question']
             elif 'question' in item: question = item['question']
@@ -912,10 +1000,47 @@ async def main_async():
                 prompt = main_reasoning_prompt_closeset_general_qa(question, tools_block)
             elif args.dataset_name == 'toolhop':
                 prompt = main_reasoning_prompt_closeset_general_qa(question, json.dumps(tools_for_prompt, indent=2), get_toolhop_prompt())
+            elif args.dataset_name == 'mcp':
+                # MCP uses compact registry string, not JSON
+                prompt = main_reasoning_prompt_closeset_general_qa(question, tool_list)
             else:
                 prompt = main_reasoning_prompt_closeset_general_qa(question, json.dumps(tool_list, indent=2))
 
         item['prompt'] = prompt
+
+        # ---------------------- Inject Relevant Memories ----------------------
+        # Retrieve and inject relevant past memories if memory system is enabled
+        if getattr(args, 'memory_enabled', True) and tool_manager.memory_manager is not None:
+            # Get tool names for memory retrieval
+            available_tool_names = None
+            if tool_list:
+                if isinstance(tool_list, list):
+                    available_tool_names = [
+                        t.get('name', '') if isinstance(t, dict) else str(t)
+                        for t in tool_list
+                    ]
+                    available_tool_names = [n for n in available_tool_names if n]
+
+            # Retrieve relevant memories
+            memory_context = tool_manager.get_relevant_memories_for_prompt(
+                task_description=question,
+                available_tool_names=available_tool_names,
+                dataset_name=args.dataset_name,
+            )
+
+            # Inject memories into prompt if any relevant memories found
+            if memory_context:
+                # Insert memory context before the main reasoning instruction
+                memory_section = f"\n\n# Prior Experience (from previous similar tasks)\n{memory_context}\n"
+                if "Now, begin your reasoning for" in prompt:
+                    prompt = prompt.replace(
+                        "Now, begin your reasoning for",
+                        f"{memory_section}\nNow, begin your reasoning for"
+                    )
+                else:
+                    # Fallback: prepend to prompt
+                    prompt = memory_section + prompt
+                item['prompt'] = prompt
 
         seq_item = {
             'id': id,
@@ -933,7 +1058,7 @@ async def main_async():
             seq_item['available_tools'] = []
         else:
             seq_item['available_tools'] = tool_list
-        
+
         active_sequences.append(seq_item)
     
     # ---------------------- Process all sequences ----------------------

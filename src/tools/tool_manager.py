@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncio
 import requests
 
+from tools.memory_manager import MemoryManager
+
 
 class ToolManager:
     """
@@ -35,6 +37,20 @@ class ToolManager:
             self.tool_retriever_api_base = getattr(args, 'tool_retriever_api_base', None) or os.getenv('TOOL_RETRIEVER_API_BASE', None)
         except Exception:
             self.tool_retriever_api_base = None
+
+        # Initialize Memory Manager for brain-inspired memory architecture
+        self.memory_manager = None
+        if getattr(args, 'memory_enabled', True):
+            memory_dir = getattr(args, 'memory_cache_dir', './cache/memory')
+            max_episodic = getattr(args, 'max_episodic_memories', 100)
+            max_tool = getattr(args, 'max_tool_memories_per_tool', 20)
+            retrieval_k = getattr(args, 'memory_retrieval_top_k', 5)
+            self.memory_manager = MemoryManager(
+                memory_dir=memory_dir,
+                max_episodic_memories=max_episodic,
+                max_tool_memories_per_tool=max_tool,
+                memory_retrieval_top_k=retrieval_k,
+            )
 
     @classmethod
     async def create(cls, args, webshop_url_id=0):
@@ -98,6 +114,22 @@ class ToolManager:
         elif args.dataset_name in ['tmdb', 'spotify']:
             # RestBench datasets - no global caller needed, tools are integrated in executor
             self.caller = None
+        elif args.dataset_name == 'mcp':
+            # MCP (IFS Cloud) integration
+            from tools.mcp_client import MCPToolCaller
+            planning_url = getattr(args, 'mcp_planning_url', None)
+            customer_url = getattr(args, 'mcp_customer_url', None)
+            self.mcp_caller = MCPToolCaller(planning_url=planning_url, customer_url=customer_url)
+            try:
+                self._mcp_tools = await asyncio.wait_for(
+                    self.mcp_caller.initialize(), 
+                    timeout=30.0  # 30 second timeout for initialization
+                )
+                print(f"Loaded {len(self._mcp_tools)} tools from MCP servers")
+            except asyncio.TimeoutError:
+                print("WARNING: MCP server initialization timed out after 30s")
+                self._mcp_tools = []
+            self.caller = self.mcp_caller
         elif args.dataset_name == 'api_bank':
             from tools.api_bank import APIBankExecutor, APIBankRetriever
             if not args.enable_tool_search:
@@ -211,6 +243,16 @@ class ToolManager:
             arguments = adapted_tool_call["function"].get("arguments", {})
             tool_name = adapted_tool_call["function"].get("name")
             return execute_restbench_tool(tool_name, arguments, args.dataset_name, args)
+        
+        elif args.dataset_name == 'mcp':
+            # MCP (IFS Cloud) tool execution with timeout
+            try:
+                return await asyncio.wait_for(
+                    self.mcp_caller.call_tool(adapted_tool_call),
+                    timeout=60.0  # 60 second timeout per tool call
+                )
+            except asyncio.TimeoutError:
+                return {"error": "MCP tool call timed out after 60 seconds"}
         
         elif args.dataset_name in ['gaia', 'hle', 'browsecomp']:
             # GAIA/HLE/BrowseComp local tools execution
@@ -456,6 +498,78 @@ class ToolManager:
     # convenience alias used by run_deep_agent.py
     def save_caches(self) -> None:
         self.update_web_cache()
+        # Also save memory caches
+        if self.memory_manager is not None:
+            self.memory_manager.save_memories()
+
+    # ---------------------- Memory System Methods ----------------------
+
+    def get_relevant_memories_for_prompt(
+        self,
+        task_description: str,
+        available_tool_names: Optional[List[str]] = None,
+        dataset_name: Optional[str] = None,
+    ) -> str:
+        """
+        Retrieve relevant past memories formatted for prompt injection.
+
+        Args:
+            task_description: The current task description/question
+            available_tool_names: List of tool names available for this task
+            dataset_name: Optional dataset name for filtering
+
+        Returns:
+            Formatted string of relevant memories to inject into prompt
+        """
+        if self.memory_manager is None:
+            return ""
+        return self.memory_manager.format_memories_for_prompt(
+            query=task_description,
+            available_tool_names=available_tool_names,
+            dataset_name=dataset_name,
+        )
+
+    def store_memory_on_fold(
+        self,
+        episode_memory: Dict,
+        working_memory: Dict,
+        tool_memory: Dict,
+        task_description: str,
+        task_id: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Store memories when thought folding occurs.
+
+        Args:
+            episode_memory: The episodic memory dict
+            working_memory: The working memory dict
+            tool_memory: The tool memory dict
+            task_description: Description of the task
+            task_id: Optional task ID
+            dataset_name: Optional dataset name
+
+        Returns:
+            The task ID used for storage, or None if memory disabled
+        """
+        if self.memory_manager is None:
+            return None
+        return self.memory_manager.store_complete_memory(
+            episode_memory=episode_memory,
+            working_memory=working_memory,
+            tool_memory=tool_memory,
+            task_description=task_description,
+            task_id=task_id,
+            dataset_name=dataset_name,
+        )
+
+    def get_memory_stats(self) -> Dict:
+        """Get statistics about stored memories."""
+        if self.memory_manager is None:
+            return {'memory_enabled': False}
+        stats = self.memory_manager.get_memory_stats()
+        stats['memory_enabled'] = True
+        return stats
 
     def set_runtime_clients(self, vqa_client=None, semaphore=None, aux_client=None, aux_model_name=None) -> None:
         """Set runtime clients/resources after initialization."""

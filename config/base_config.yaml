@@ -26,22 +26,22 @@ webshop_service_url: YOUR_WEBSHOP_SERVICE_URL
 # ---------------------------- Model Config ----------------------------
 
 # Main Reasoning LLM
-model_name: YOUR_SERVED_MODEL_NAME
+model_name: gpt-5.2
 
-base_url: YOUR_REASONING_MODEL_API_BASE  # H800*8
-api_key: YOUR_REASONING_MODEL_API_KEY
-tokenizer_path: /path/to/your/reasoning/model/tokenizer
+base_url: https://api.openai.com/v1
+api_key: YOUR_OPENAI_API_KEY
+tokenizer_path: gpt-4o-mini
 
 # Auxiliary LLM
-aux_model_name: YOUR_SERVED_AUX_MODEL_NAME
-aux_base_url: YOUR_AUX_MODEL_API_BASE
-aux_api_key: YOUR_AUX_MODEL_API_KEY
-aux_tokenizer_path: /path/to/your/aux/model/tokenizer
+aux_model_name: gpt-4o-mini
+aux_base_url: https://api.openai.com/v1
+aux_api_key: YOUR_OPENAI_API_KEY
+aux_tokenizer_path: gpt-4o-mini
 
 # VQA
-vqa_model_name: YOUR_SERVED_VQA_MODEL_NAME
-vqa_base_url: YOUR_VQA_MODEL_API_BASE
-vqa_api_key: YOUR_VQA_MODEL_API_KEY
+vqa_model_name: gpt-4o-mini
+vqa_base_url: https://api.openai.com/v1
+vqa_api_key: YOUR_OPENAI_API_KEY
 
 # Tool Retriever
 tool_retriever_model_path: /path/to/your/retriever/model
@@ -83,8 +83,39 @@ gaia_file_dir: ./data/GAIA/files
 hle_data_path: ./data/HLE/all_500.json
 hle_image_dir: ./data/HLE/images
 
+# MCP (IFS Cloud)
+mcp_planning_url: http://localhost:8000/sse
+mcp_customer_url: http://localhost:8001/sse
+
 # Cache
 tool_index_cache_dir: ./cache/tool_index
 search_cache_dir: ./cache/search
 url_cache_dir: ./cache/url
+
+# ---------------------------- Memory System Config ----------------------------
+# Brain-inspired memory architecture for cross-task learning
+
+# Enable/disable memory system
+memory_enabled: true
+
+# Directory for persistent memory storage
+memory_cache_dir: ./cache/memory
+
+# Maximum number of episodic memories to retain (oldest pruned first)
+max_episodic_memories: 100
+
+# Maximum tool memories per tool (oldest pruned first)
+max_tool_memories_per_tool: 20
+
+# Number of relevant memories to retrieve for each new task
+memory_retrieval_top_k: 5
+
+# ---------------------------- Agent v3 Config ----------------------------
+# Claude Code style agent settings
+
+# Prompts directory for v3 agent
+prompts_dir: ./src/prompts
+
+# LLM provider: "openai" or "anthropic"
+llm_provider: openai
 

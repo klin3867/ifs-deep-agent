@@ -6,6 +6,7 @@ alfworld
 beautifulsoup4
 chardet
 fastapi
+flask
 fuzzywuzzy
 func-timeout
 lxml
